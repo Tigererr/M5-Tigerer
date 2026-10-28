@@ -43,10 +43,9 @@ menu_icons = ["T", "S", "$", "G", "*"]
 # --- ТЕТРИС (глобальные) ---
 tetris_init = False
 pieceX, pieceY = 4, 0
-last_pieceX, last_pieceY = 4, 0
 score_tetris = 0
 tetris_fall_counter = 0
-TETRIS_FALL_DELAY = 1
+TETRIS_FALL_DELAY = 15 # Увеличено для нормальной скорости падения
 grid = [[0] * 10 for _ in range(15)]
 
 # --- АКУЛА (глобальные) ---
@@ -69,12 +68,51 @@ slot_pause_until = 0
 sensors_init = False
 last_batt_level = -1
 
+# --- NVS (СОХРАНЕНИЕ) ---
+try:
+    import esp32
+    _nvs = esp32.NVS("tiger_os")
+except Exception:
+    _nvs = None
+
+def nvs_save_int(key, value):
+    if _nvs is None: return
+    try:
+        _nvs.set_i32(key, value)
+        _nvs.commit()
+    except Exception:
+        pass
+
+def nvs_load_int(key, default):
+    if _nvs is None: return default
+    try:
+        return _nvs.get_i32(key)
+    except Exception:
+        return default
+
+def load_settings():
+    global brightness, screen_timeout, screen_always_on, show_boot_tiger
+    brightness = nvs_load_int("bright", 150)
+    screen_timeout = nvs_load_int("timeout", 15)
+    screen_always_on = bool(nvs_load_int("always_on", 0))
+    show_boot_tiger = bool(nvs_load_int("boot_tiger", 1))
+
+def save_settings():
+    nvs_save_int("bright", brightness)
+    nvs_save_int("timeout", screen_timeout)
+    nvs_save_int("always_on", 1 if screen_always_on else 0)
+    nvs_save_int("boot_tiger", 1 if show_boot_tiger else 0)
+
 # --- ВСПОМОГАТЕЛЬНЫЕ ---
 _batt_history = []
-
+_batt_cache_val = [-1, 0]
 
 def get_battery_level():
-    global _batt_history
+    global _batt_history, _batt_cache_val
+    now = time.ticks_ms()
+    if time.ticks_diff(now, _batt_cache_val[1]) < 1000:
+        return _batt_cache_val[0]
+    
     try:
         raw = M5.Power.getBatteryLevel()
     except:
@@ -90,8 +128,9 @@ def get_battery_level():
     total = 0
     for v in _batt_history:
         total += v
-    return total // len(_batt_history)
-
+    avg = total // len(_batt_history)
+    _batt_cache_val = [avg, now]
+    return avg
 
 def is_btn_c_pressed():
     try:
@@ -102,7 +141,6 @@ def is_btn_c_pressed():
     except:
         pass
     return False
-
 
 def draw_battery_icon(x, y):
     level = get_battery_level()
@@ -128,7 +166,7 @@ def draw_battery_icon(x, y):
     M5.Lcd.print(str(level) + "%")
 
 
-# --- ЗАГРУЗКА ---
+# --- ЗАГРУЗКА (ОРИГИНАЛЬНЫЙ ТИГР) ---
 def draw_boot_screen():
     M5.Lcd.clear(BLACK)
     start_time = time.ticks_ms()
@@ -228,7 +266,7 @@ def draw_menu():
 
     M5.Lcd.setTextColor(YELLOW)
     M5.Lcd.setTextSize(2)
-    text_x = 120 - (len(title) * 6)
+    text_x = 120 - (len(title) * 12 // 2) 
     M5.Lcd.setCursor(text_x, 100)
     M5.Lcd.print(title)
 
@@ -266,7 +304,7 @@ def handle_menu():
             draw_settings()
 
 
-# --- ТЕТРИС ---
+# --- ТЕТРИС (ИСПРАВЛЕН) ---
 def tetris_draw_frame():
     M5.Lcd.clear(BLACK)
     M5.Lcd.drawRect(40, 10, 60, 110, WHITE)
@@ -283,17 +321,17 @@ def tetris_draw_frame():
     M5.Lcd.setCursor(110, 32)
     M5.Lcd.print("0    ")
 
-
 def tetris_redraw_grid():
     M5.Lcd.fillRect(41, 11, 58, 108, BLACK)
     for r in range(15):
         for c in range(10):
             if grid[r][c] != 0:
                 M5.Lcd.fillRect(40 + c * 6, 10 + r * 6, 6, 6, grid[r][c])
-
+    # Рамка ПОВЕРХ, чтобы не затиралась
+    M5.Lcd.drawRect(40, 10, 60, 110, WHITE)
 
 def tetris_game_over():
-    global tetris_init, pieceX, pieceY, last_pieceX, last_pieceY, score_tetris, tetris_fall_counter
+    global tetris_init, pieceX, pieceY, score_tetris, tetris_fall_counter
 
     M5.Lcd.clear(BLACK)
     M5.Lcd.setTextColor(RED)
@@ -315,7 +353,6 @@ def tetris_game_over():
                 for c in range(10):
                     grid[r][c] = 0
             pieceX, pieceY = 4, 0
-            last_pieceX, last_pieceY = 4, 0
             score_tetris = 0
             tetris_fall_counter = 0
             tetris_init = False
@@ -326,101 +363,78 @@ def tetris_game_over():
             return MENU
         time.sleep_ms(20)
 
-
 def run_tetris():
-    global pieceX, pieceY, last_pieceX, last_pieceY, score_tetris
+    global pieceX, pieceY, score_tetris
     global current_state, grid, tetris_init, tetris_fall_counter
 
     if not tetris_init:
         tetris_draw_frame()
         pieceX, pieceY = 4, 0
-        last_pieceX, last_pieceY = 4, 0
         score_tetris = 0
         tetris_fall_counter = 0
         tetris_init = True
-
-    if M5.BtnA.wasPressed():
-        if pieceX > 0:
-            M5.Lcd.fillRect(40 + pieceX * 6, 10 + pieceY, 6, 6, BLACK)
-            pieceX -= 1
-    if M5.BtnB.wasPressed():
-        if pieceX < 9:
-            M5.Lcd.fillRect(40 + pieceX * 6, 10 + pieceY, 6, 6, BLACK)
-            pieceX += 1
-
-    tetris_fall_counter += 1
-    can_fall = False
-    if tetris_fall_counter >= TETRIS_FALL_DELAY:
-        can_fall = True
-
-    collision = False
-    if can_fall:
-        tetris_fall_counter = 0
-        test_y = pieceY + 1
-        test_next_row = (test_y + 6) // 6
-        blocked = False
-
-        if test_y + 6 > 102:
-            blocked = True
-        elif test_next_row < 15:
-            if grid[test_next_row][pieceX] != 0:
-                blocked = True
-
-        if blocked:
-            collision = True
-        else:
-            M5.Lcd.fillRect(40 + pieceX * 6, 10 + pieceY, 6, 6, BLACK)
-            pieceY += 1
-
-    if collision:
-        land_row = pieceY // 6
-        if land_row < 0:
-            land_row = 0
-        if land_row >= 15:
-            land_row = 14
-
-        if land_row <= 1:
-            current_state = tetris_game_over()
-            return
-
-        M5.Lcd.fillRect(40 + pieceX * 6, 10 + pieceY, 6, 6, BLACK)
-        grid[land_row][pieceX] = CYAN
-
-        cleared = 0
-        for r in range(15):
-            full = True
-            for c in range(10):
-                if grid[r][c] == 0:
-                    full = False
-                    break
-            if full:
-                for r2 in range(r, 0, -1):
-                    for c in range(10):
-                        grid[r2][c] = grid[r2 - 1][c]
-                for c in range(10):
-                    grid[0][c] = 0
-                cleared += 1
-
-        score_tetris += cleared * 100 + 10
         tetris_redraw_grid()
 
-        M5.Lcd.fillRect(110, 32, 100, 12, BLACK)
-        M5.Lcd.setTextColor(WHITE)
-        M5.Lcd.setTextSize(1)
-        M5.Lcd.setCursor(110, 32)
-        M5.Lcd.print(str(score_tetris))
+    moved = False
 
-        pieceY = 0
-        pieceX = random.randint(0, 9)
+    if M5.BtnA.wasPressed() and pieceX > 0:
+        pieceX -= 1
+        moved = True
+    if M5.BtnB.wasPressed() and pieceX < 9:
+        pieceX += 1
+        moved = True
+
+    tetris_fall_counter += 1
+    if tetris_fall_counter >= TETRIS_FALL_DELAY:
         tetris_fall_counter = 0
+        next_row = (pieceY // 6) + 1
+        blocked = False
+        if next_row >= 15:
+            blocked = True
+        elif grid[next_row][pieceX] != 0:
+            blocked = True
 
-        if grid[0][pieceX] != 0:
-            current_state = tetris_game_over()
-            return
+        if blocked:
+            land_row = pieceY // 6
+            if land_row <= 1:
+                current_state = tetris_game_over()
+                return
+            grid[land_row][pieceX] = CYAN
 
-    if pieceY < 102:
+            cleared = 0
+            for r in range(15):
+                full = True
+                for c in range(10):
+                    if grid[r][c] == 0:
+                        full = False
+                        break
+                if full:
+                    for r2 in range(r, 0, -1):
+                        for c in range(10):
+                            grid[r2][c] = grid[r2 - 1][c]
+                    for c in range(10):
+                        grid[0][c] = 0
+                    cleared += 1
+
+            score_tetris += cleared * 100 + 10
+            M5.Lcd.fillRect(110, 32, 100, 12, BLACK)
+            M5.Lcd.setTextColor(WHITE)
+            M5.Lcd.setTextSize(1)
+            M5.Lcd.setCursor(110, 32)
+            M5.Lcd.print(str(score_tetris))
+
+            pieceY = 0
+            pieceX = random.randint(0, 9)
+            if grid[0][pieceX] != 0:
+                current_state = tetris_game_over()
+                return
+        else:
+            pieceY += 6
+        moved = True
+
+    if moved:
+        tetris_redraw_grid()
         M5.Lcd.fillRect(40 + pieceX * 6, 10 + pieceY, 6, 6, CYAN)
-    last_pieceX, last_pieceY = pieceX, pieceY
 
     if is_btn_c_pressed():
         tetris_init = False
@@ -428,14 +442,13 @@ def run_tetris():
         draw_menu()
 
 
-# --- АКУЛА ---
+# --- АКУЛА (ОРИГИНАЛЬНАЯ) ---
 def shark_draw_frame():
     M5.Lcd.clear(NAVY)
     M5.Lcd.setTextColor(WHITE)
     M5.Lcd.setTextSize(1)
     M5.Lcd.setCursor(5, 5)
     M5.Lcd.print("Score: 0 | A:Up B:Dwn C:Exit")
-
 
 def run_shark():
     global shark_init, shark_alive, fishY, sharkX, sharkY, score_shark
@@ -537,7 +550,6 @@ def slots_draw_static():
     M5.Lcd.setCursor(10, 110)
     M5.Lcd.print("Bal: $" + str(slot_score) + " | A: SPIN | C: Exit")
 
-
 def slots_draw_values():
     M5.Lcd.fillRect(32, 42, 36, 36, BLACK)
     M5.Lcd.fillRect(102, 42, 36, 36, BLACK)
@@ -551,14 +563,12 @@ def slots_draw_values():
     M5.Lcd.setCursor(182, 48)
     M5.Lcd.print(slot_symbols[slot3])
 
-
 def slots_update_balance():
     M5.Lcd.fillRect(10, 110, 220, 15, BLACK)
     M5.Lcd.setTextColor(GREEN)
     M5.Lcd.setTextSize(1)
     M5.Lcd.setCursor(10, 110)
     M5.Lcd.print("Bal: $" + str(slot_score) + " | A: SPIN | C: Exit")
-
 
 def run_slots():
     global slots_init, spinning, slot1, slot2, slot3, slot_score
@@ -704,7 +714,6 @@ def draw_settings():
     M5.Lcd.print("C: Exit")
     draw_battery_icon(185, 2)
 
-
 def handle_settings():
     global settings_index, brightness, screen_timeout, current_state
     global last_batt_level, screen_always_on, show_boot_tiger
@@ -723,6 +732,7 @@ def handle_settings():
             else:
                 brightness += 50
             M5.Lcd.setBrightness(brightness)
+            save_settings()
             draw_settings()
 
         elif settings_index == 1:
@@ -734,10 +744,12 @@ def handle_settings():
             else:
                 screen_always_on = False
                 screen_timeout = 5
+            save_settings()
             draw_settings()
 
         elif settings_index == 2:
             show_boot_tiger = not show_boot_tiger
+            save_settings()
             draw_settings()
 
         elif settings_index == 3:
@@ -760,6 +772,7 @@ def handle_settings():
 
 
 # --- СТАРТ ---
+load_settings()
 M5.Lcd.setBrightness(brightness)
 draw_boot_screen()
 
